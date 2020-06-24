@@ -1,0 +1,228 @@
+---
+title: "De La Carolina a Cumbayork"
+subtitle: "El precio de las viviendas en Quito (2019)"
+author: "Leonardo A. Arias (leoarias1985@gmail.com)"
+date: "6/19/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, include=FALSE}
+library(ggplot2)
+library(dplyr)
+library(tidyverse)
+library(hrbrthemes)
+library(tidyr)
+library(lubridate)
+library(viridis)
+library(RColorBrewer)
+library(DataExplorer)
+library(openxlsx)
+library(spdplyr)
+library(ggmap)
+library(sf)
+library(rgdal)
+library(leaflet)
+library(formattable)
+library(knitr)
+library(kableExtra)
+library(papeR)
+```
+
+```{r, include=FALSE, message=FALSE,warning=FALSE}
+base_geo<-readOGR(".","limpia")
+```
+
+
+```{r, echo=FALSE,message=FALSE,warning=FALSE}
+
+
+#formato var##
+
+base_geo$price<-as.numeric(as.character(base_geo$price))
+base_geo$fecha<-as.Date.factor(base_geo$fecha)
+base_geo$surface_to<-as.numeric(as.character(base_geo$surface_to))
+
+#creo mes y year separado
+
+base_geo<-base_geo%>%mutate(mes=month(fecha),anio=year(fecha))
+
+#alimino year 2020
+base_geo<-base_geo%>%filter(anio==2019)
+
+####graficos iniciales####
+base_geo_df<-as.data.frame(base_geo)
+
+
+```
+
+El presente documento tiene por finalidad, mostrar un analísis de datos georeferenciados de vivienda en la ciudad de Quito 2019, se lo ha dividido en tres etapas que se las publicará periodicamente, a continuación de realizará un análisis exploratorio de datos, en la segunda parte un apartado metodológico de tratamiento geografico de la infrmación y finalmente la implementación de algunas técnicas de analísis espacial. 
+
+# Análisis exploratorio de datos
+
+La información obtenida de la página en mención se ha desagregado entre la venta de casas y departamentos. En total se tiene una base de información de 5774 anuncios, de los cuales 2697 pertenecen a departamentos y 3077 a casas. Existe una mayor concentración de departamentos en el área del hipercentro de la ciudad y en cuanto a casas la distribución en general se aglomera en las periferias de la ciudad y los valles colindantes.
+
+
+```{r ,echo=TRUE, message=FALSE,warning=FALSE,fig.align="center", fig.width=10, fig.height=5, fig.cap="Figura 1.Localización de inmuebles"}
+
+
+colmap1<-colorFactor(c("red","blue"),domain = base_geo$property_t)
+
+eti<-sprintf("<strong>Precio m<sup>2</sup>:</strong> USD %g m<sup>2</sup><br/>
+                  <strong>Precio:</strong> USD %g<br/>
+                  <strong>Tamaño:</strong> %g metros",
+                 base_geo$PM2,base_geo$price,base_geo$surface_to)%>%
+  lapply(htmltools::HTML)
+
+leaflet(data=base_geo)%>%setView(lng=-78.524948 ,lat =-0.22985, zoom=11)%>%
+  addTiles()%>%
+  addCircleMarkers(color = ~colmap1(property_t),stroke = F,fillOpacity = 0.6,opacity = 0.1,
+                   label = eti, radius = 4)%>%
+  addLegend("bottomright",pal = colmap1,values = ~property_t,
+            title = "Tipo de propiedad",
+            opacity = 1)
+```
+
+## Resumen estadístico
+
+Observando el resumen estadístico de las variables de precio de vivienda, tamaño de inmueble y precio del metro cuadrado, se evidencia que existen observaciones (viviendas) con valores y tamaños muy altos, esto es importante analizar ya que puede ser determinante para entender la distribución de los valores de los inmuebles en el espacio. 
+
+
+```{r,message=FALSE,warning=FALSE}
+colum<-base_geo_df%>%select(property_t,surface_to,price,PM2)%>%
+  rename(Tamano=surface_to,Precio=price,PrecioM2=PM2)
+
+
+kable(summarize(colum,type="numeric",groups="property_t",test=F),caption = "Tabla 1. Resumen Estadistico")%>%
+  kable_styling(bootstrap_options = c("striped","hover"),full_width = F)
+  
+
+```
+
+Lo antes expuesto se puede corroborar con mediante un gráfico de violín, donde se puede evidenciar una dispersión en las variables de precio y tamaño de los inmuebles. Por un lado existe una distribución bastante heterogénea en las casas en relación a su precio, mientras que para los departamentos una alta concentración del precio alrededor de la media.
+
+
+```{r echo=TRUE,message=FALSE,warning=FALSE,fig.align="center", fig.width=8, fig.height=6, fig.cap="Figura 2.Gráfico de violin"}
+base_geo_df%>%ggplot(aes(x=property_t,fill=property_t))+
+  geom_violin(aes(y=log10(price),alpha=0.6))+
+  scale_fill_viridis(option = "E",discrete = TRUE)+
+  labs(title = "Precios de casas/departamentos ciudad de Quito (2019)",
+       x="Tipo de propiedad",y="logaritmo del precio",
+       caption ="Fuente:Properati | Elaboración: @leoaarias")+
+  theme_ipsum()+
+  theme(legend.position = "none")
+```
+
+En términos generales observando la distribución a nivel de tamaño de vivienda, son bastante heterogéneas una de otra, por lo que se deberá realizar una depuración de la data, para tener un mejor ajuste de la información y de los próximos cálculos estadísticos.
+
+```{r, message=FALSE,warning=FALSE,fig.align="center", fig.width=8, fig.height=6, fig.cap="Figura 3.Gráfico boxplot"}
+base_geo_df%>%
+  ggplot(aes(x=property_t, y=log10(surface_to), fill=property_t))+
+  geom_boxplot()+
+  geom_jitter(color="black",size=0.4,alpha=0.5)+
+  scale_fill_viridis(option = "D",discrete = TRUE)+
+  labs(title = "Tamaño de casas/departamentos ciudad de Quito (2019)",
+       x="Tipo de propiedad",y="logaritmo del tamaño de la vivienda",
+       caption ="Fuente:Properati | Elaboración: @leoaarias")+
+  theme_ipsum()+
+  theme(legend.position = "none")
+
+```
+
+Por otro lado, viendo una gráfica de dispersión de puntos entre el precio y el tamaño de los bienes inmuebles, podemos encontrar una correlación entre el tamaño de la vivienda y el precio de la misma. Sin embargo, cuando se incluye una curva de tendencia, se evidencia una particularidad, existe una lógica decreciente en cuanto a departamentos; se puede evidenciar que en punto el costo de un departamento mientras más grande es su precio no necesariamente se ve reflejado en su precio. 
+
+Esto podría deberse a múltiples factores, pero presumiremos que podría ser una lógica de formación de precios por su localización y el comportamiento del mercado en relación a sus caracteristicas de demanda.
+
+
+```{r base_geo_df, echo=TRUE,message=FALSE,warning=FALSE,fig.align="center", fig.width=12, fig.height=6, fig.cap="Figura 4.Gráfico de disperción"}
+base_geo_df%>%ggplot(aes(x=log10(surface_to),color=property_t))+
+  geom_point(aes(y=log10(price)),size=2)+
+  geom_smooth(aes(y=log10(price)))+
+  scale_color_viridis(option = "D",discrete = T)+
+  labs(title = "Precios de casas y departamentos de la Ciudad de Quito (2019)",
+       x="Logaritmo de total de superficie", y="Logaritmo de precio de bien",
+       caption = "Fuente:Properati | Elaboración: @leoaarias",color=NULL)+
+  theme_ipsum()+
+  theme(legend.position = "bottom")+
+  facet_grid(~property_t)
+```
+
+### Distribución espacial del mercado de la vivienda
+
+El mercado de la vivienda y el suelo en la ciudad de Quito se encuentra marcado por ciclos de movilización interna de las diferentes clases sociales, si revisamos la literatura, podemos encontrar por ejemplo: la clase alta, usualmente ha sido un agente histórico de colocación de precio de suelo y por consiguiente de las viviendas, desde la salida de centro histórico, pasando por La Mariscal, La Paz, La Pradera y finalmente desde inicios del 2010 una colonización de los valles de Cumbaya y Tumbaco. 
+
+Por otro lado, desde las perspectivas de la vivienda autoconstruida y barrios populares, el valor de la vivienda y el suelo, responde a lógicas comunitarias y asociativas; o, desde proyectos de vivienda solidaria o para familias de escasos recursos. Usualmente localizadas en los márgenes de lo urbano, en la distribución que se puede ver en la Figura 5 y 6 se evidencia una lógica muy similar.
+
+```{r,include=FALSE, message=FALSE,warning=FALSE}
+mapa_casa_final<-readOGR(".","mapa_casa")
+```
+
+
+```{r, echo=TRUE,message=FALSE,warning=FALSE,fig.align="center", fig.width=10, fig.height=5, fig.cap="Figura 5.Mapa de precios de casas por hexagonos"}
+
+
+colM2<-colorNumeric(palette = "plasma",domain = mapa_casa_final$mtr_cdr)
+
+eti_casa<-sprintf("<strong>Precio Promedio M<sup>2</sup>:</strong> USD %g m<sup>2</sup><br/>
+                  <strong>Número de observaciones:</strong>%g<br/>
+                  <strong>Precio Promedio:</strong> USD %g<br/>
+                  <strong>Tamaño Promedio:</strong> %g metros",
+                  mapa_casa_final$mtr_cdr,mapa_casa_final$n,mapa_casa_final$precio,mapa_casa_final$superfc)%>%
+  lapply(htmltools::HTML)
+
+leaflet(data=mapa_casa_final)%>%setView(lng=-78.524948 ,lat =-0.22985, zoom=11)%>%
+  addTiles()%>%
+  addPolygons(stroke = T, color = ~colM2(mtr_cdr),fillOpacity = 0.6,opacity = 0.1,
+              smoothFactor = 0.5,label = eti_casa)%>%
+  addLegend("bottomright",pal =colM2,values = ~mtr_cdr,
+            title = "Metro cuadrado (2019)",
+            labFormat = labelFormat(prefix = "$"),
+            opacity = 1)
+```
+
+Si analizando a detalle las figuras 5 y 6, se evidencia que existe una gran concentración de viviendas de precios altos; tanto casas como departamentos, en la zona del hipercentro de la ciudad y los valles de Cumbaya y Tumbaco. Así mismo, el mercado de la vivienda en los últimos años no solo busca atender el estrato socio económico alto. La consolidación de las periferias por proyectos con precios bajos se mantiene, tanto al Sur de la ciudad como al norte del hipercentro.
+
+```{r,include=FALSE, message=FALSE,warning=FALSE}
+mapa_depar_final<-readOGR(".","mapa_depar")
+```
+
+
+```{r,echo=TRUE,message=FALSE,warning=FALSE,fig.align="center", fig.width=10, fig.height=5, fig.cap="Figura 6.Mapa de precios de departamento por hexagonos"}
+
+
+colM21<-colorNumeric(palette = "viridis",domain = mapa_depar_final$mtr_cdr)
+
+eti_depar<-sprintf("<strong>Precio Promedio M<sup>2</sup>:</strong> USD %g m<sup>2</sup><br/>
+                  <strong>Número de observaciones:</strong>%g<br/>
+                  <strong>Precio Promedio:</strong> USD %g<br/>
+                  <strong>Tamaño Promedio:</strong> %g metros",
+                  mapa_depar_final$mtr_cdr,mapa_depar_final$n,mapa_depar_final$precio,mapa_depar_final$superfc)%>%
+  lapply(htmltools::HTML)
+
+leaflet(data= mapa_depar_final)%>%setView(lng=-78.524948 ,lat =-0.22985, zoom=11)%>%
+  addTiles()%>%
+  addPolygons(stroke = T, color = ~colM21(mtr_cdr),fillOpacity = 0.6,opacity = 0.1,
+              smoothFactor = 0.5,label = eti_depar)%>%
+  addLegend("bottomright",pal =colM21,values = ~mtr_cdr,
+            title = "Metro cuadrado (2019)",
+            labFormat = labelFormat(prefix = "$"),
+            opacity = 1)
+```
+
+
+
+Dentro de las características observadas, se puede identificar como la norma urbanística ha beneficiado a la construcción de ciertos tipos de vivienda, mientras en el hipercentro de la ciudad, se consolida espacios altamente densificados con precios de vivienda altos. En los valles se identifica altos precios de viviendas con gran espacio en suelo rural, la pregunta que surge es: ¿Cuál es la relación del pago de impuestos predial en estos espacios de alto precio de suelo?
+
+Adicionalmente, la reciente penetración de construcciones en altura representa un reto para la movilidad de los valles a la ciudad, altas densificaciones en espacios exclusivos, genera altas inversiones en soluciones de movilidad, las cuales son demandas constantemente por sus nuevos habitantes.
+
+Pero fundamental la pregunta que nos surge, es: ¿Volverán a huir las clases altas de los valles de Cumbaya o Tumbaco? Con la llegada de edificaciones en altura, la ciudad sigue creciendo, los límites del uso del suelo quedan olvidados. Mientras no se logre consolidar una idea integral de ciudad, los riesgos de expansión a los valles evidenciarán la generación de una ciudad aún más policentrica de la existente, pero sobre todo con los mismos problemas de movilidad, extracción de plusvalías y desarrollo espacial inequitativo existente.
+
+#### Contexto metodológico
+
+El presente análisis se lo realiza con base en la información del portal web properati: <https://www.properati.com.ec/data>. Se realizó una limpieza de la información, ya subiremos en otro momento, el procesamiento realizado. Adicionalmente, se ha utilizado procesamiento en ArcGis. 
+
+
+
